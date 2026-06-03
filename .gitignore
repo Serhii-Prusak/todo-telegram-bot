@@ -1,0 +1,8 @@
+.venv/
+.env
+task_assistant.db
+__pycache__/
+*.pyc
+logs/
+.idea/
+.vscode/
