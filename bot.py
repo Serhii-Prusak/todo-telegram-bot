@@ -51,7 +51,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/list — show all active tasks\n"
         "/today — show tasks due today\n"
         "/overdue — show overdue tasks\n"
-        "/done <task_id> — close a task in Todoist\n"
+        "/close — show task completion buttons\n"
+        "/done <task_id> — close a task by ID\n"
         "/digest — show full task digest\n\n"
         "/soon — show tasks due in the next 3 days\n"
         "/cancel — cancel pending task draft\n"
@@ -102,7 +103,7 @@ async def list_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     await update.message.reply_text(
         message,
-        reply_markup=task_done_keyboard(tasks),
+        reply_markup=task_view_keyboard(),
     )
 
 
@@ -131,7 +132,7 @@ async def done_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not task:
         await update.message.reply_text(
             f"I could not find an active task ending with ID {short_id_input}.\n\n"
-            "Use /list to see current task IDs."
+            "Use /close to finish tasks with buttons."
         )
         return
 
@@ -166,7 +167,10 @@ async def today_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     today_only = sort_tasks_by_due_and_priority(today_only)
 
     if not today_only:
-        await update.message.reply_text("🎉 No tasks due today.")
+        await update.message.reply_text(
+            "🎉 No tasks due today.",
+            reply_markup=navigation_keyboard(),
+        )
         return
 
     lines = [f"📌 Tasks due today ({today.isoformat()}):\n"]
@@ -174,12 +178,9 @@ async def today_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     for task in today_only:
         lines.append(format_task_line(task))
 
-    lines.append("\nTo close a task:")
-    lines.append("/done <task_id>")
-
     await update.message.reply_text(
-        "🎉 No tasks due today.",
-        reply_markup=navigation_keyboard(),
+        "\n".join(lines),
+        reply_markup=task_view_keyboard(),
     )
 
 
@@ -205,7 +206,10 @@ async def overdue_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     overdue_only = sort_tasks_by_due_and_priority(overdue_only)
 
     if not overdue_only:
-        await update.message.reply_text("✅ No overdue tasks.")
+        await update.message.reply_text(
+            "✅ No overdue tasks.",
+            reply_markup=navigation_keyboard(),
+        )
         return
 
     lines = [f"🚨 OVERDUE tasks ({today.isoformat()}):\n"]
@@ -218,12 +222,9 @@ async def overdue_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             f"{format_task_line(task)} — overdue by {days_overdue} day(s)"
         )
 
-    lines.append("\nTo close a task:")
-    lines.append("/done <task_id>")
-
     await update.message.reply_text(
-        "✅ No overdue tasks.",
-        reply_markup=navigation_keyboard(),
+        "\n".join(lines),
+        reply_markup=task_view_keyboard(),
     )
 
 
@@ -239,7 +240,7 @@ async def add_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "Buy cat food tomorrow priority 2 size S\n\n"
             "I will parse it, ask for missing priority/size if needed, "
             "and then add it to Todoist.",
-            reply_markup=navigation_keyboard(),
+            reply_markup=pending_input_keyboard(),
         )
         return
 
@@ -260,7 +261,7 @@ async def digest_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     message = build_digest_message(tasks)
     await update.message.reply_text(
         message,
-        reply_markup=navigation_keyboard(),
+        reply_markup=digest_keyboard(),
     )
 
 
@@ -287,6 +288,7 @@ async def send_daily_digest(context: ContextTypes.DEFAULT_TYPE) -> None:
     await context.bot.send_message(
         chat_id=int(chat_id),
         text=message,
+        reply_markup=digest_keyboard(),
     )
 
 
@@ -295,22 +297,30 @@ async def handle_followup_message(update: Update, context: ContextTypes.DEFAULT_
     text = update.message.text.strip()
 
     mode = get_chat_mode(chat_id)
+    pending = get_pending_task(chat_id)
+
+    if pending:
+        await update.message.reply_text("🔍 Updating task draft...")
+        await complete_pending_task_from_followup(update, pending, text)
+        return
 
     if mode == "awaiting_new_task":
         await parse_and_create_task_from_text(update, text)
         return
-    
-    pending = get_pending_task(chat_id)
 
-    if not pending:
-        await update.message.reply_text(
-            "I do not have a pending task for this message.\n\n"
-            "Use /add to create a new task.",
-            reply_markup=navigation_keyboard(),
-        )
-        return
+    await update.message.reply_text(
+        "I do not have a pending task for this message.\n\n"
+        "Use /add to create a new task.",
+        reply_markup=navigation_keyboard(),
+    )
 
-    await update.message.reply_text("🔍 Updating task draft...")
+
+async def complete_pending_task_from_followup(
+    update: Update,
+    pending: dict,
+    text: str,
+) -> None:
+    chat_id = update.effective_chat.id
 
     # Extract metadata from follow-up text using regex-based method
     # This preserves the original task name/description and only updates the metadata
@@ -377,7 +387,7 @@ async def handle_followup_message(update: Update, context: ContextTypes.DEFAULT_
             f"{question}\n\n"
             "You can reply naturally, for example:\n"
             "priority 3 size M category admin",
-            reply_markup=navigation_keyboard(),
+            reply_markup=pending_input_keyboard(),
         )
         return
 
@@ -400,6 +410,7 @@ async def handle_followup_message(update: Update, context: ContextTypes.DEFAULT_
         return
 
     clear_pending_task(chat_id)
+    clear_chat_mode(chat_id)
 
     task_url = todoist_task.get("url")
 
@@ -458,7 +469,24 @@ async def soon_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     await update.message.reply_text(
         "\n".join(lines),
-        reply_markup=task_done_keyboard(soon_only),
+        reply_markup=task_view_keyboard(),
+    )
+
+
+async def close_tasks_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    try:
+        tasks = get_active_tasks()
+    except Exception as exc:
+        logging.exception("Failed to fetch Todoist tasks")
+        await update.message.reply_text(
+            "I could not fetch tasks from Todoist.\n\n"
+            f"Error: {exc}"
+        )
+        return
+
+    await update.message.reply_text(
+        build_close_tasks_message(tasks),
+        reply_markup=task_done_keyboard(tasks) if tasks else navigation_keyboard(),
     )
 
 
@@ -527,13 +555,14 @@ async def parse_and_create_task_from_text(
             original_text=task_text,
             parsed=parsed,
         )
+        clear_chat_mode(update.effective_chat.id)
 
         await update.message.reply_text(
             "⚠️ I need a bit more information before creating this task.\n\n"
             f"{question}\n\n"
             "You can reply naturally, for example:\n"
             "priority 3 size M category admin",
-            reply_markup=navigation_keyboard(),
+            reply_markup=pending_input_keyboard(),
         )
         return
 
@@ -594,9 +623,50 @@ def short_task_id(task_id: str) -> str:
     return str(task_id)[-6:]
 
 
-def format_task_line(task: dict) -> str:
-    task_id = str(task.get("id"))
+def task_display_title(task: dict) -> str:
     content = task.get("content", "Untitled task")
+
+    # Remove metadata prefix visually:
+    # [P3][M][home] Clean apartment -> Clean apartment
+    if "] " in content:
+        return content.split("] ", maxsplit=1)[-1]
+
+    return content
+
+
+def task_metadata(task: dict) -> dict:
+    content = task.get("content", "")
+    metadata = {
+        "priority": None,
+        "size": None,
+        "category": None,
+    }
+
+    if not content.startswith("[P") or "] " not in content:
+        return metadata
+
+    metadata_text = content.split("] ", maxsplit=1)[0]
+    parts = metadata_text.strip("[]").split("][")
+
+    for part in parts:
+        if part.startswith("P") and part[1:].isdigit():
+            metadata["priority"] = part
+        elif part in {"S", "M", "L", "XL"}:
+            metadata["size"] = part
+        else:
+            metadata["category"] = part
+
+    return metadata
+
+
+def format_task_line(
+    task: dict,
+    include_id: bool = False,
+    include_metadata: bool = False,
+) -> str:
+    task_id = str(task.get("id"))
+    content = task_display_title(task)
+    metadata = task_metadata(task)
 
     due = task.get("due")
     due_text = "No due date"
@@ -604,7 +674,20 @@ def format_task_line(task: dict) -> str:
     if isinstance(due, dict):
         due_text = due.get("date") or due.get("datetime") or "No due date"
 
-    return f"• {short_task_id(task_id)} — {content} — {due_text}"
+    metadata_text = ""
+    if include_metadata:
+        metadata_parts = [
+            part for part in [metadata["priority"], metadata["size"]]
+            if part
+        ]
+
+        if metadata_parts:
+            metadata_text = f"{' / '.join(metadata_parts)} · "
+
+    if include_id:
+        return f"• {short_task_id(task_id)} — {metadata_text}{content} — {due_text}"
+
+    return f"• {metadata_text}{content} — {due_text}"
 
 
 def find_task_by_short_id(tasks: list[dict], short_id: str) -> dict | None:
@@ -687,20 +770,31 @@ def build_digest_message(tasks: list[dict]) -> str:
     future = sort_tasks_by_due_and_priority(future)
     no_due_date = sort_tasks_by_due_and_priority(no_due_date)
 
-    lines = [f"🌅 Task Digest — {today.isoformat()}\n"]
+    lines = [
+        f"🌅 Task Digest — {today.isoformat()}",
+        "",
+        (
+            f"Overdue: {len(overdue)} | Today: {len(today_tasks_list)} | "
+            f"Soon: {len(due_soon)} | Later: {len(future)} | No date: {len(no_due_date)}"
+        ),
+        "",
+    ]
 
     if overdue:
         lines.append("🚨 OVERDUE")
         for task in overdue:
             due_date = get_task_due_date(task)
             days_overdue = (today - due_date).days if due_date else 0
-            lines.append(f"{format_task_line(task)} — overdue by {days_overdue} day(s)")
+            lines.append(
+                f"{format_task_line(task, include_metadata=True)} — "
+                f"overdue by {days_overdue} day(s)"
+            )
         lines.append("")
 
     if today_tasks_list:
         lines.append("📌 Today")
         for task in today_tasks_list:
-            lines.append(format_task_line(task))
+            lines.append(format_task_line(task, include_metadata=True))
         lines.append("")
 
     if due_soon:
@@ -714,26 +808,46 @@ def build_digest_message(tasks: list[dict]) -> str:
             else:
                 due_text = f"in {days_left} days"
 
-            lines.append(f"{format_task_line(task)} — due {due_text}")
+            lines.append(
+                f"{format_task_line(task, include_metadata=True)} — due {due_text}"
+            )
         lines.append("")
 
     if future:
-        lines.append("🗓 Future")
-        for task in future:
-            lines.append(format_task_line(task))
+        lines.append(f"🗓 Later ({len(future)})")
+        for task in future[:5]:
+            lines.append(format_task_line(task, include_metadata=True))
+        if len(future) > 5:
+            lines.append(f"• ...and {len(future) - 5} more")
         lines.append("")
 
     if no_due_date:
-        lines.append("🧊 No due date")
-        for task in no_due_date:
-            lines.append(format_task_line(task))
+        lines.append(f"🧊 No due date ({len(no_due_date)})")
+        for task in no_due_date[:5]:
+            lines.append(format_task_line(task, include_metadata=True))
+        if len(no_due_date) > 5:
+            lines.append(f"• ...and {len(no_due_date) - 5} more")
         lines.append("")
 
     if not any([overdue, today_tasks_list, due_soon, future, no_due_date]):
         lines.append("🎉 No active tasks found.")
 
-    lines.append("To close a task:")
-    lines.append("/done <task_id>")
+    return "\n".join(lines)
+
+
+def build_close_tasks_message(tasks: list[dict]) -> str:
+    if not tasks:
+        return "🎉 No active tasks found."
+
+    visible_count = min(len(tasks), 10)
+    lines = [f"✅ Close tasks\n\nChoose one task below. Showing {visible_count} of {len(tasks)} active task(s).\n"]
+
+    for task in sort_tasks_by_due_and_priority(tasks)[:visible_count]:
+        lines.append(format_task_line(task))
+
+    if len(tasks) > visible_count:
+        lines.append("")
+        lines.append("Use /today, /soon, or /overdue first if you want a smaller list.")
 
     return "\n".join(lines)
 
@@ -745,7 +859,7 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton("➕ Add task", callback_data="cmd:help_add"),
             ],
             [
-                InlineKeyboardButton("📋 List", callback_data="cmd:list"),
+                InlineKeyboardButton("📋 All tasks", callback_data="cmd:list"),
                 InlineKeyboardButton("📌 Today", callback_data="cmd:today"),
             ],
             [
@@ -754,7 +868,7 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton("🌅 Digest", callback_data="cmd:digest"),
-                InlineKeyboardButton("❌ Cancel draft", callback_data="cmd:cancel"),
+                InlineKeyboardButton("✅ Close tasks", callback_data="cmd:close"),
             ],
         ]
     )
@@ -768,7 +882,8 @@ def confirm_done_keyboard(task_id: str) -> InlineKeyboardMarkup:
                 InlineKeyboardButton("↩️ No", callback_data="cancel_done"),
             ],
             [
-                InlineKeyboardButton("📋 List", callback_data="cmd:list"),
+                InlineKeyboardButton("📋 All tasks", callback_data="cmd:list"),
+                InlineKeyboardButton("🏠 Menu", callback_data="cmd:menu"),
             ],
         ]
     )
@@ -849,9 +964,6 @@ def grouped_task_message(
     if len(lines) == 1:
         lines.append("🎉 No matching tasks found.")
 
-    lines.append("To finish a task:")
-    lines.append("/done <task_id>")
-
     return "\n".join(lines)
 
 # -----------------Button helpers-----------------
@@ -859,15 +971,40 @@ def navigation_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton("📋 List", callback_data="cmd:list"),
-                InlineKeyboardButton("📌 Today", callback_data="cmd:today"),
+                InlineKeyboardButton("➕ Add task", callback_data="cmd:help_add"),
+                InlineKeyboardButton("🏠 Menu", callback_data="cmd:menu"),
             ],
+        ]
+    )
+
+
+def task_view_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
             [
-                InlineKeyboardButton("⚠️ Soon", callback_data="cmd:soon"),
-                InlineKeyboardButton("🚨 Overdue", callback_data="cmd:overdue"),
+                InlineKeyboardButton("✅ Close tasks", callback_data="cmd:close"),
+                InlineKeyboardButton("➕ Add task", callback_data="cmd:help_add"),
+                InlineKeyboardButton("🏠 Menu", callback_data="cmd:menu"),
             ],
+        ]
+    )
+
+
+def digest_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
             [
-                InlineKeyboardButton("🌅 Digest", callback_data="cmd:digest"),
+                InlineKeyboardButton("🏠 Menu", callback_data="cmd:menu"),
+            ],
+        ]
+    )
+
+
+def pending_input_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("❌ Cancel", callback_data="cmd:cancel"),
                 InlineKeyboardButton("🏠 Menu", callback_data="cmd:menu"),
             ],
         ]
@@ -877,16 +1014,9 @@ def navigation_keyboard() -> InlineKeyboardMarkup:
 def task_done_keyboard(tasks: list[dict]) -> InlineKeyboardMarkup:
     buttons = []
 
-    for task in tasks[:10]:
+    for task in sort_tasks_by_due_and_priority(tasks)[:10]:
         task_id = str(task.get("id"))
-        content = task.get("content", "Untitled task")
-
-        button_title = content
-
-        # Remove metadata prefix visually:
-        # [P3][M][home] Clean apartment -> Clean apartment
-        if "] " in button_title:
-            button_title = button_title.split("] ", maxsplit=1)[-1]
+        button_title = task_display_title(task)
 
         if len(button_title) > 40:
             button_title = button_title[:37] + "..."
@@ -902,18 +1032,7 @@ def task_done_keyboard(tasks: list[dict]) -> InlineKeyboardMarkup:
 
     buttons.append(
         [
-            InlineKeyboardButton("📋 List", callback_data="cmd:list"),
-            InlineKeyboardButton("📌 Today", callback_data="cmd:today"),
-        ]
-    )
-    buttons.append(
-        [
-            InlineKeyboardButton("⚠️ Soon", callback_data="cmd:soon"),
-            InlineKeyboardButton("🌅 Digest", callback_data="cmd:digest"),
-        ]
-    )
-    buttons.append(
-        [
+            InlineKeyboardButton("➕ Add task", callback_data="cmd:help_add"),
             InlineKeyboardButton("🏠 Menu", callback_data="cmd:menu"),
         ]
     )
@@ -940,7 +1059,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
         await query.edit_message_text(
             message,
-            reply_markup=task_done_keyboard(tasks),
+            reply_markup=task_view_keyboard(),
         )
         return
 
@@ -968,7 +1087,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
         await query.edit_message_text(
             "\n".join(lines),
-            reply_markup=task_done_keyboard(today_only),
+            reply_markup=task_view_keyboard(),
         )
         return
 
@@ -1002,7 +1121,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
         await query.edit_message_text(
             "\n".join(lines),
-            reply_markup=task_done_keyboard(overdue_only),
+            reply_markup=task_view_keyboard(),
         )
         return
 
@@ -1012,7 +1131,16 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
         await query.edit_message_text(
             message,
-            reply_markup=navigation_keyboard(),
+            reply_markup=digest_keyboard(),
+        )
+        return
+
+    if data == "cmd:close":
+        tasks = get_active_tasks()
+
+        await query.edit_message_text(
+            build_close_tasks_message(tasks),
+            reply_markup=task_done_keyboard(tasks) if tasks else navigation_keyboard(),
         )
         return
 
@@ -1033,7 +1161,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             "Buy cat food tomorrow priority 2 size S\n\n"
             "I will parse it, ask for missing priority/size if needed, "
             "and then add it to Todoist.",
-            reply_markup=navigation_keyboard(),
+            reply_markup=pending_input_keyboard(),
         )
         return
     
@@ -1097,7 +1225,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
         await query.edit_message_text(
             "\n".join(lines),
-            reply_markup=task_done_keyboard(soon_only),
+            reply_markup=task_view_keyboard(),
         )
         return
     
@@ -1188,6 +1316,7 @@ def main() -> None:
     app.add_handler(CommandHandler("soon", soon_tasks))
     app.add_handler(CommandHandler("cancel", cancel_pending))
     app.add_handler(CommandHandler("menu", menu))
+    app.add_handler(CommandHandler("close", close_tasks_menu))
 
     app.add_handler(CallbackQueryHandler(handle_button))
 

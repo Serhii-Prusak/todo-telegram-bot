@@ -1,37 +1,32 @@
 # Todo Telegram Bot
 
-A personal Telegram task assistant that uses OpenAI to parse natural-language tasks, creates tasks in Todoist, and sends daily task digests.
+A local Telegram task assistant that uses OpenAI to parse natural-language tasks, creates tasks in Todoist, and can send a daily task digest while the bot process is running.
 
 ## Features
 
 - Add tasks from Telegram
 - Parse natural-language task text using OpenAI
 - Create tasks in Todoist
-- Required fields:
-  - Priority: P1–P4
-  - Size: S, M, L, XL
-  - Category
-- Optional due date
-- Follow-up flow when required fields are missing
-- View tasks from Telegram
-- Complete tasks from Telegram with confirmation
-- Daily automatic digest
-- Runs as a background service on macOS
+- Ask follow-up questions when required fields are missing
+- View active, today, soon, overdue, and digest task lists
+- Complete Todoist tasks from Telegram with confirmation
+- Store pending drafts and input mode in local SQLite
+
+Gamification is intentionally left for a future update.
 
 ## Stack
 
-- Python
+- Python 3.11+
 - Telegram Bot API
 - OpenAI API
 - Todoist API v1
 - SQLite
 - python-telegram-bot
-- macOS launchd for background service
 
 ## Project Structure
 
 ```text
-todo-telegram-bot/
+/todo-telegram-bot
   bot.py
   openai_parser.py
   todoist_client.py
@@ -39,23 +34,17 @@ todo-telegram-bot/
   requirements.txt
   .env
   task_assistant.db
-  logs/
-    bot.out.log
-    bot.err.log
 ```
 
 ## Requirements
 
-- Python 3.11+
 - Telegram bot token from BotFather
 - Todoist API token
 - OpenAI API key
-- Todoist project, for example: `Task Assistant`
+- Todoist project ID
 - Todoist labels/categories
 
-## Todoist Labels
-
-Recommended labels:
+Recommended Todoist labels:
 
 ```text
 travel
@@ -72,9 +61,9 @@ admin
 
 Create these labels in Todoist before using the bot.
 
-## Priority Meaning
+## Task Metadata
 
-The bot uses Todoist UI-style priority:
+Priority uses Todoist UI-style values:
 
 ```text
 P1 = highest / urgent
@@ -83,7 +72,7 @@ P3 = normal
 P4 = low / no rush
 ```
 
-Internally, Todoist API uses reverse priority values, so the bot maps them automatically:
+The Todoist API uses the reverse numeric direction, and the bot maps it automatically:
 
 ```text
 Bot P1 -> Todoist API priority 4
@@ -92,54 +81,39 @@ Bot P3 -> Todoist API priority 2
 Bot P4 -> Todoist API priority 1
 ```
 
-## Size Meaning
+Size values:
 
 ```text
 S = small task for 1 day max
-M = medium task for 1–3 days
+M = medium task for 1-3 days
 L = large task for more than 3 days or multiple steps
-XL = huge task with significant time, effort, steps, or dependencies
+XL = huge task with significant effort, steps, or dependencies
 ```
 
 ## Setup
 
-### 1. Create and activate virtual environment
+Create and activate a virtual environment:
 
 ```bash
-cd /Users/lana/Projects/todo-telegram-bot
-
+cd /todo-telegram-bot
 python3 -m venv .venv
 source .venv/bin/activate
 ```
 
-### 2. Install dependencies
+Install dependencies:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-Example `requirements.txt`:
-
-```txt
-python-telegram-bot[job-queue]==21.10
-python-dotenv==1.0.1
-openai==1.59.7
-requests==2.32.3
-```
-
-The `job-queue` extra is needed for automatic daily digest scheduling.
-
-### 3. Create `.env`
-
-Create a `.env` file in the project root:
+Create `.env` in the project root:
 
 ```env
 TELEGRAM_BOT_TOKEN=your_telegram_bot_token_here
 TELEGRAM_CHAT_ID=your_telegram_chat_id_here
 
 TODOIST_API_TOKEN=your_todoist_api_token_here
-TODOIST_PROJECT_NAME=Task Assistant
-TODOIST_PROJECT_ID=your_todoist_project_id_here
+TODOIST_PROJECT_ID=your_real_todoist_project_id
 
 OPENAI_API_KEY=your_openai_api_key_here
 OPENAI_MODEL=gpt-4o-mini
@@ -147,7 +121,21 @@ OPENAI_MODEL=gpt-4o-mini
 TIMEZONE=Europe/Berlin
 ```
 
-Do not commit `.env` to GitHub.
+Do not commit `.env`.
+
+## Running Locally
+
+Start the bot from the project root:
+
+```bash
+cd /todo-telegram-bot
+source .venv/bin/activate
+python bot.py
+```
+
+Stop the bot with `Ctrl+C`.
+
+The automatic digest only runs while `python bot.py` is running locally. A small server deployment can be added later for always-on use.
 
 ## Getting Telegram Chat ID
 
@@ -157,149 +145,49 @@ Run the bot and send:
 /chatid
 ```
 
-The bot replies with your chat ID. Add it to `.env` as:
+The bot replies with your chat ID. Add it to `.env`:
 
 ```env
 TELEGRAM_CHAT_ID=123456789
 ```
 
-## Running Locally
-
-```bash
-cd /Users/lana/Projects/todo-telegram-bot
-source .venv/bin/activate
-python bot.py
-```
-
-Stop with:
-
-```text
-Ctrl+C
-```
-
 ## Telegram Commands
 
-### `/start`
+```text
+/start   Show welcome message
+/help    Show command help
+/menu    Show the main button menu
+/add     Start adding a task
+/list    Show all active tasks
+/today   Show tasks due today
+/soon    Show tasks due in the next 3 days
+/overdue Show overdue tasks
+/digest  Show full task digest
+/close   Show task-completion buttons
+/done    Close a task by ID
+/cancel  Cancel a pending task draft or input mode
+/chatid  Show the current Telegram chat ID
+```
 
-Shows welcome message and menu buttons.
-
-### `/help`
-
-Shows command list, priority rules, size rules, and examples.
-
-### `/menu`
-
-Shows the main button menu.
-
-### `/add <task>`
-
-Adds a new task.
-
-Example:
+Add a task directly:
 
 ```text
 /add Buy cat food tomorrow priority 2 size S category pets
 ```
 
-If required fields are missing, the bot asks a follow-up question.
+Or press `Add task` in `/menu`, then send the task text without `/add`.
 
-Example:
-
-```text
-/add Clean apartment
-```
-
-Bot asks for missing fields:
-
-```text
-Please provide priority, size, and category.
-```
-
-Then reply:
+If required fields are missing, the bot asks for a follow-up:
 
 ```text
 priority 3 size M category home
 ```
 
-### Add Task Button
-
-From `/menu`, press:
-
-```text
-➕ Add task
-```
-
-Then send the task text without `/add`.
-
-Example:
-
-```text
-Buy cat food tomorrow priority 2 size S category pets
-```
-
-### `/list`
-
-Shows all active tasks grouped by:
-
-```text
-Overdue
-Today
-Due soon
-Future
-No due date
-```
-
-Task buttons are shown below the message.
-
-### `/today`
-
-Shows tasks due today.
-
-### `/soon`
-
-Shows tasks due in the next 3 days.
-
-### `/overdue`
-
-Shows overdue tasks.
-
-### `/digest`
-
-Shows the full task digest manually.
-
-### `/done <task_id>`
-
-Starts task-completion confirmation.
-
-Example:
-
-```text
-/done 123456
-```
-
-The bot asks:
-
-```text
-Are you sure you finished this task?
-```
-
-Then you can confirm or cancel.
-
-### Task Completion Buttons
-
-Task lists include task-name buttons. Pressing one asks for confirmation before closing the task in Todoist.
-
-### `/cancel`
-
-Cancels a pending task draft or current add-task input mode.
-
-### `/chatid`
-
-Shows the current Telegram chat ID.
+Task list views are read-only so they stay easy to scan. Use `/close` or the `Close tasks` button when you want to finish tasks from Telegram. Digest is a daily report view and only links back to the menu.
 
 ## Daily Digest
 
-The bot sends an automatic digest every day at 07:00 Europe/Berlin.
+The bot sends an automatic digest every day while it is running locally.
 
 The digest includes:
 
@@ -311,100 +199,9 @@ Future tasks
 Tasks without due date
 ```
 
-The automatic digest works only while the bot process is running.
-
-## macOS Background Service
-
-The bot can run in the background using `launchd`.
-
-### Service file
-
-Location:
-
-```bash
-~/Library/LaunchAgents/com.lana.todo-telegram-bot.plist
-```
-
-Example plist:
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
- "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-  <dict>
-    <key>Label</key>
-    <string>com.lana.todo-telegram-bot</string>
-
-    <key>ProgramArguments</key>
-    <array>
-      <string>/Users/lana/Projects/todo-telegram-bot/.venv/bin/python</string>
-      <string>/Users/lana/Projects/todo-telegram-bot/bot.py</string>
-    </array>
-
-    <key>WorkingDirectory</key>
-    <string>/Users/lana/Projects/todo-telegram-bot</string>
-
-    <key>RunAtLoad</key>
-    <true/>
-
-    <key>KeepAlive</key>
-    <true/>
-
-    <key>StandardOutPath</key>
-    <string>/Users/lana/Projects/todo-telegram-bot/logs/bot.out.log</string>
-
-    <key>StandardErrorPath</key>
-    <string>/Users/lana/Projects/todo-telegram-bot/logs/bot.err.log</string>
-  </dict>
-</plist>
-```
-
-### Start service
-
-```bash
-launchctl load ~/Library/LaunchAgents/com.lana.todo-telegram-bot.plist
-launchctl start com.lana.todo-telegram-bot
-```
-
-### Stop service
-
-```bash
-launchctl stop com.lana.todo-telegram-bot
-```
-
-### Restart after code changes
-
-```bash
-launchctl stop com.lana.todo-telegram-bot
-launchctl start com.lana.todo-telegram-bot
-```
-
-### Unload service
-
-```bash
-launchctl unload ~/Library/LaunchAgents/com.lana.todo-telegram-bot.plist
-```
-
-### Check service status
-
-```bash
-launchctl list | grep todo-telegram-bot
-```
-
-### Check logs
-
-```bash
-tail -f /Users/lana/Projects/todo-telegram-bot/logs/bot.out.log
-```
-
-```bash
-tail -f /Users/lana/Projects/todo-telegram-bot/logs/bot.err.log
-```
-
 ## SQLite Database
 
-The bot uses SQLite for:
+The bot uses local SQLite for:
 
 - Pending task drafts
 - Current chat input modes
@@ -415,18 +212,18 @@ Database file:
 task_assistant.db
 ```
 
-To initialize database manually:
+Initialize the database manually:
 
 ```bash
-cd /Users/lana/Projects/todo-telegram-bot
+cd /todo-telegram-bot
 source .venv/bin/activate
 python -c "from db import init_db; init_db(); print('DB initialized')"
 ```
 
-To clear pending drafts and modes:
+Clear pending drafts and modes:
 
 ```bash
-cd /Users/lana/Projects/todo-telegram-bot
+cd /todo-telegram-bot
 source .venv/bin/activate
 python -c "from db import init_db; init_db(); import sqlite3; conn=sqlite3.connect('task_assistant.db'); conn.execute('DELETE FROM pending_tasks'); conn.execute('DELETE FROM chat_modes'); conn.commit(); print('cleared')"
 ```
@@ -443,16 +240,10 @@ Check:
 pgrep -af "todo-telegram-bot|bot.py|python"
 ```
 
-Kill old processes:
+Stop the extra local process:
 
 ```bash
 pkill -f bot.py
-```
-
-If needed:
-
-```bash
-kill -9 <PID>
 ```
 
 ### Telegram Markdown error
@@ -470,12 +261,12 @@ Remove `parse_mode="Markdown"` from that reply or escape user/task text before s
 Run database initialization:
 
 ```bash
-cd /Users/lana/Projects/todo-telegram-bot
+cd /todo-telegram-bot
 source .venv/bin/activate
 python -c "from db import init_db; init_db(); print('DB initialized')"
 ```
 
-Then restart the service.
+Then restart `python bot.py`.
 
 ### Todoist endpoint deprecated
 
@@ -491,9 +282,9 @@ Do not use the old REST v2 base URL:
 https://api.todoist.com/rest/v2
 ```
 
-### Todoist task creation is slow
+### Todoist project ID missing or invalid
 
-Add `TODOIST_PROJECT_ID` to `.env` so the bot does not fetch all projects every time.
+Set `TODOIST_PROJECT_ID` in `.env` to the real Todoist project ID. Do not leave placeholder values such as `your_project_id_here`.
 
 ### OpenAI API key missing
 
@@ -505,36 +296,6 @@ OPENAI_API_KEY=sk-...
 
 No spaces around `=`.
 
-Correct:
-
-```env
-OPENAI_API_KEY=sk-...
-```
-
-Wrong:
-
-```env
-OPENAI_API_KEY = sk-...
-```
-
-### Date range not detected
-
-The parser should use the first date in a range.
-
-Example:
-
-```text
-Remind me about Prime Days on 23-26 June
-```
-
-Expected due date:
-
-```text
-June 23
-```
-
-If the model misses it, the fallback date parser in `openai_parser.py` should set it.
-
 ## Security Notes
 
 - Never commit `.env`
@@ -542,17 +303,13 @@ If the model misses it, the fallback date parser in `openai_parser.py` should se
 - If a Telegram token is leaked, revoke it with BotFather
 - If an OpenAI API key is leaked, delete it in the OpenAI Platform and create a new one
 - Keep API usage limits low while testing
+- Keep local machine paths and usernames out of public documentation
 
 ## Future Ideas
 
-Not implemented yet:
-
-- XP and gold for completed tasks
-- Level-up choices
-- Luck stat
-- Streaks
+- Small server deployment for always-on use
+- XP, levels, streaks, or other gamification
 - Recurring tasks
 - Task rescheduling from Telegram
 - Editing tasks from Telegram
-- Hosting on VPS for 24/7 reliability
 - Web dashboard
