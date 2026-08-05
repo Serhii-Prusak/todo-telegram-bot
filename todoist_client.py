@@ -1,6 +1,8 @@
 import os
 import requests
 from dotenv import load_dotenv
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 load_dotenv()
 
@@ -8,6 +10,24 @@ TODOIST_API_TOKEN = os.getenv("TODOIST_API_TOKEN")
 TODOIST_PROJECT_ID = os.getenv("TODOIST_PROJECT_ID")
 
 TODOIST_API_BASE = "https://api.todoist.com/api/v1"
+
+
+def _session() -> requests.Session:
+    session = requests.Session()
+    retry_strategy = Retry(
+        total=3,
+        backoff_factor=1,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET"],
+        respect_retry_after_header=True,
+    )
+    adapter = HTTPAdapter(max_retries=retry_strategy)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
+
+
+TODOIST_SESSION = _session()
 
 
 def _clean_env(value: str | None) -> str | None:
@@ -148,7 +168,7 @@ def get_active_tasks() -> list[dict]:
         if cursor:
             params["cursor"] = cursor
 
-        response = requests.get(
+        response = TODOIST_SESSION.get(
             f"{TODOIST_API_BASE}/tasks",
             headers=_headers(),
             params=params,

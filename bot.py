@@ -2,7 +2,16 @@ import os
 import logging
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler, MessageHandler, filters
+from telegram.ext import (
+    Application,
+    ApplicationHandlerStop,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    TypeHandler,
+    filters,
+)
 from openai_parser import parse_task_text, parse_followup_metadata
 from todoist_client import create_task, get_active_tasks, close_task
 from datetime import date, datetime
@@ -21,10 +30,87 @@ load_dotenv()
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
+
+def parse_telegram_ids(raw_value: str | None, variable_name: str) -> frozenset[int]:
+    if not raw_value:
+        return frozenset()
+
+    parsed_ids = set()
+    for raw_id in raw_value.split(","):
+        value = raw_id.strip()
+        if not value:
+            continue
+
+        try:
+            parsed_ids.add(int(value))
+        except ValueError as exc:
+            raise RuntimeError(
+                f"Invalid Telegram ID {value!r} in {variable_name}. "
+                "Use comma-separated numeric IDs."
+            ) from exc
+
+    return frozenset(parsed_ids)
+
+
+LEGACY_TELEGRAM_CHAT_IDS = parse_telegram_ids(
+    os.getenv("TELEGRAM_CHAT_ID"),
+    "TELEGRAM_CHAT_ID",
+)
+TELEGRAM_ALLOWED_USER_IDS = parse_telegram_ids(
+    os.getenv("TELEGRAM_ALLOWED_USER_IDS"),
+    "TELEGRAM_ALLOWED_USER_IDS",
+) or LEGACY_TELEGRAM_CHAT_IDS
+TELEGRAM_DIGEST_CHAT_IDS = parse_telegram_ids(
+    os.getenv("TELEGRAM_DIGEST_CHAT_IDS"),
+    "TELEGRAM_DIGEST_CHAT_IDS",
+) or TELEGRAM_ALLOWED_USER_IDS
+
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
+
+
+def is_chat_id_command(update: Update) -> bool:
+    message = update.effective_message
+    if not message or not message.text:
+        return False
+
+    command = message.text.split(maxsplit=1)[0].lower()
+    command = command.split("@", maxsplit=1)[0]
+    return command == "/chatid"
+
+
+async def enforce_allowlist(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    del context
+
+    # Anyone may retrieve their own ID so the owner can add them to the allowlist.
+    if is_chat_id_command(update):
+        return
+
+    user = update.effective_user
+    if user and user.id in TELEGRAM_ALLOWED_USER_IDS:
+        return
+
+    user_id = user.id if user else "unknown"
+    logging.warning("Blocked Telegram update from unauthorized user ID %s", user_id)
+
+    if update.callback_query:
+        await update.callback_query.answer(
+            "This bot is private. Send /chatid and ask the owner for access.",
+            show_alert=True,
+        )
+    elif update.effective_message:
+        await update.effective_message.reply_text(
+            "🔒 This bot is private.\n\n"
+            "Send /chatid, then ask the bot owner to add your user ID."
+        )
+
+    raise ApplicationHandlerStop
+
 
 # --------------------Bot command handlers--------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -266,16 +352,21 @@ async def digest_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 async def chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id if update.effective_user else "Unavailable"
+    current_chat_id = update.effective_chat.id if update.effective_chat else "Unavailable"
     await update.message.reply_text(
-        f"Your chat ID is:\n{update.effective_chat.id}"
+        f"Your Telegram user ID is:\n{user_id}\n\n"
+        f"This chat ID is:\n{current_chat_id}\n\n"
+        "In a private chat, these IDs are normally the same."
     )
 
 
 async def send_daily_digest(context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat_id = os.getenv("TELEGRAM_CHAT_ID")
-
-    if not chat_id:
-        logging.error("Missing TELEGRAM_CHAT_ID in .env file.")
+    if not TELEGRAM_DIGEST_CHAT_IDS:
+        logging.error(
+            "No daily digest recipients configured. Set "
+            "TELEGRAM_DIGEST_CHAT_IDS or TELEGRAM_ALLOWED_USER_IDS in .env."
+        )
         return
 
     try:
@@ -285,11 +376,18 @@ async def send_daily_digest(context: ContextTypes.DEFAULT_TYPE) -> None:
         logging.exception("Failed to build daily digest")
         message = "I could not build the daily task digest. Please check the bot logs."
 
-    await context.bot.send_message(
-        chat_id=int(chat_id),
-        text=message,
-        reply_markup=digest_keyboard(),
-    )
+    for recipient_chat_id in sorted(TELEGRAM_DIGEST_CHAT_IDS):
+        try:
+            await context.bot.send_message(
+                chat_id=recipient_chat_id,
+                text=message,
+                reply_markup=digest_keyboard(),
+            )
+        except Exception:
+            logging.exception(
+                "Failed to send daily digest to Telegram chat ID %s",
+                recipient_chat_id,
+            )
 
 
 async def handle_followup_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -978,6 +1076,21 @@ def navigation_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def task_completed_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("📋 All tasks", callback_data="cmd:list"),
+                InlineKeyboardButton("✅ Close tasks", callback_data="cmd:close"),
+            ],
+            [
+                InlineKeyboardButton("➕ Add task", callback_data="cmd:help_add"),
+                InlineKeyboardButton("🏠 Menu", callback_data="cmd:menu"),
+            ],
+        ]
+    )
+
+
 def task_view_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
@@ -1040,6 +1153,18 @@ def task_done_keyboard(tasks: list[dict]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(buttons)
 
 
+async def get_active_tasks_for_button(query, action: str) -> list[dict] | None:
+    try:
+        return get_active_tasks()
+    except Exception as exc:
+        logging.exception("Failed to %s", action)
+        await query.edit_message_text(
+            f"I could not {action}.\n\nError: {exc}",
+            reply_markup=navigation_keyboard(),
+        )
+        return None
+
+
 async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
@@ -1047,7 +1172,10 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     data = query.data
 
     if data == "cmd:list":
-        tasks = get_active_tasks()
+        tasks = await get_active_tasks_for_button(query, "fetch tasks from Todoist")
+        if tasks is None:
+            return
+
         if not tasks:
             await query.edit_message_text(
                 "🎉 No active tasks found.",
@@ -1064,7 +1192,10 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     if data == "cmd:today":
-        tasks = get_active_tasks()
+        tasks = await get_active_tasks_for_button(query, "fetch tasks from Todoist")
+        if tasks is None:
+            return
+
         today = get_today_berlin()
 
         today_only = [
@@ -1092,7 +1223,10 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     if data == "cmd:overdue":
-        tasks = get_active_tasks()
+        tasks = await get_active_tasks_for_button(query, "fetch tasks from Todoist")
+        if tasks is None:
+            return
+
         today = get_today_berlin()
 
         overdue_only = [
@@ -1126,7 +1260,10 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     if data == "cmd:digest":
-        tasks = get_active_tasks()
+        tasks = await get_active_tasks_for_button(query, "build the task digest")
+        if tasks is None:
+            return
+
         message = build_digest_message(tasks)
 
         await query.edit_message_text(
@@ -1136,7 +1273,9 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     if data == "cmd:close":
-        tasks = get_active_tasks()
+        tasks = await get_active_tasks_for_button(query, "fetch tasks from Todoist")
+        if tasks is None:
+            return
 
         await query.edit_message_text(
             build_close_tasks_message(tasks),
@@ -1194,7 +1333,10 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
     
     if data == "cmd:soon":
-        tasks = get_active_tasks()
+        tasks = await get_active_tasks_for_button(query, "fetch tasks from Todoist")
+        if tasks is None:
+            return
+
         today = get_today_berlin()
         soon_limit = today.toordinal() + 3
 
@@ -1272,7 +1414,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
         await query.edit_message_text(
             "✅ Task completed!",
-            reply_markup=navigation_keyboard(),
+            reply_markup=task_completed_keyboard(),
         )
         return
 
@@ -1296,9 +1438,12 @@ def main() -> None:
 
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
+    # Run access control before all command, message, and callback handlers.
+    app.add_handler(TypeHandler(Update, enforce_allowlist), group=-1)
+
     app.job_queue.run_daily(
         send_daily_digest,
-        time=datetime.strptime("08:00", "%H:%M").time().replace(
+        time=datetime.strptime("08:45", "%H:%M").time().replace(
             tzinfo=ZoneInfo("Europe/Berlin")
         ),
         name="daily_task_digest",

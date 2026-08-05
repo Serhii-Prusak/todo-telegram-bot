@@ -110,7 +110,9 @@ Create `.env` in the project root:
 
 ```env
 TELEGRAM_BOT_TOKEN=your_telegram_bot_token_here
-TELEGRAM_CHAT_ID=your_telegram_chat_id_here
+TELEGRAM_ALLOWED_USER_IDS=your_telegram_user_id,another_allowed_user_id
+# Optional: defaults to all allowed users when omitted
+TELEGRAM_DIGEST_CHAT_IDS=your_private_chat_id,another_private_chat_id
 
 TODOIST_API_TOKEN=your_todoist_api_token_here
 TODOIST_PROJECT_ID=your_real_todoist_project_id
@@ -137,19 +139,34 @@ Stop the bot with `Ctrl+C`.
 
 The automatic digest only runs while `python bot.py` is running locally. A small server deployment can be added later for always-on use.
 
-## Getting Telegram Chat ID
+## Telegram Access and Digest Recipients
 
-Run the bot and send:
+The bot is private. Every person who needs access should open a private chat with
+the bot and send:
 
 ```text
 /chatid
 ```
 
-The bot replies with your chat ID. Add it to `.env`:
+`/chatid` is intentionally available before authorization so a new person can
+retrieve their own ID. The bot replies with both their Telegram user ID and the
+current chat ID. In a private chat, these are normally the same.
+
+Add the approved user IDs to `.env` as a comma-separated list:
 
 ```env
-TELEGRAM_CHAT_ID=123456789
+TELEGRAM_ALLOWED_USER_IDS=123456789,987654321
 ```
+
+By default, every allowed user receives the daily digest in their private chat.
+To use a different recipient list, set:
+
+```env
+TELEGRAM_DIGEST_CHAT_IDS=123456789,987654321
+```
+
+Restart the bot after changing `.env`. The older single `TELEGRAM_CHAT_ID`
+setting remains supported as a fallback during migration.
 
 ## Telegram Commands
 
